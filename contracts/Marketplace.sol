@@ -16,10 +16,11 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
 
   MarketplaceConfig public config;
 
-  MarketplaceFunds private _funds;
   mapping(RequestId => Request) private _requests;
   mapping(RequestId => RequestContext) private _requestContexts;
   mapping(SlotId => Slot) private _slots;
+
+  MarketplaceTotals internal _marketplaceTotals;
 
   struct RequestContext {
     RequestState state;
@@ -37,7 +38,7 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
   constructor(
     IERC20 token,
     MarketplaceConfig memory configuration
-  ) Collateral(token) Proofs(configuration.proofs) marketplaceInvariant {
+  ) Collateral(token) Proofs(configuration.proofs) {
     config = configuration;
   }
 
@@ -45,9 +46,7 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
     return !_hasSlots(msg.sender);
   }
 
-  function requestStorage(
-    Request calldata request
-  ) public marketplaceInvariant {
+  function requestStorage(Request calldata request) public {
     require(request.client == msg.sender, "Invalid client address");
 
     RequestId id = request.id();
@@ -59,8 +58,7 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
     _addToMyRequests(request.client, id);
 
     uint256 amount = request.price();
-    _funds.received += amount;
-    _funds.balance += amount;
+    _marketplaceTotals.received += amount;
     _transferFrom(msg.sender, amount);
 
     emit StorageRequested(id, request.ask);
@@ -133,7 +131,7 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
     }
   }
 
-  function _forciblyFreeSlot(SlotId slotId) internal marketplaceInvariant {
+  function _forciblyFreeSlot(SlotId slotId) internal {
     Slot storage slot = _slots[slotId];
     RequestId requestId = slot.requestId;
     RequestContext storage context = _requestContexts[requestId];
@@ -170,7 +168,7 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
   function _payoutSlot(
     RequestId requestId,
     SlotId slotId
-  ) private requestIsKnown(requestId) marketplaceInvariant {
+  ) private requestIsKnown(requestId) {
     RequestContext storage context = _requestContexts[requestId];
     Request storage request = _requests[requestId];
     context.state = RequestState.Finished;
@@ -180,8 +178,7 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
     _removeFromMySlots(slot.host, slotId);
 
     uint256 amount = _requests[requestId].pricePerSlot();
-    _funds.sent += amount;
-    _funds.balance -= amount;
+    _marketplaceTotals.sent += amount;
     slot.state = SlotState.Paid;
     require(token.transfer(slot.host, amount), "Payment failed");
   }
@@ -189,7 +186,7 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
   /// @notice Withdraws storage request funds back to the client that deposited them.
   /// @dev Request must be expired, must be in RequestState.New, and the transaction must originate from the depositer address.
   /// @param requestId the id of the request
-  function withdrawFunds(RequestId requestId) public marketplaceInvariant {
+  function withdrawFunds(RequestId requestId) public {
     Request storage request = _requests[requestId];
     require(block.timestamp > request.expiry, "Request not yet timed out");
     require(request.client == msg.sender, "Invalid client address");
@@ -207,8 +204,7 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
     // fill a slot. The amount that we paid to hosts will then have to be
     // deducted from the price.
     uint256 amount = request.price();
-    _funds.sent += amount;
-    _funds.balance -= amount;
+    _marketplaceTotals.sent += amount;
     require(token.transfer(msg.sender, amount), "Withdraw failed");
   }
 
@@ -216,12 +212,9 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
     return _slots[slotId].host;
   }
 
-  function getRequestFromSlotId(SlotId slotId)
-    public
-    view
-    slotIsNotFree(slotId)
-    returns (Request memory)
-  {
+  function getRequestFromSlotId(
+    SlotId slotId
+  ) public view slotIsNotFree(slotId) returns (Request memory) {
     Slot storage slot = _slots[slotId];
     return _requests[slot.requestId];
   }
@@ -302,16 +295,7 @@ contract Marketplace is Collateral, Proofs, StateRetrieval {
   event SlotFreed(RequestId indexed requestId, SlotId slotId);
   event RequestCancelled(RequestId indexed requestId);
 
-  modifier marketplaceInvariant() {
-    MarketplaceFunds memory oldFunds = _funds;
-    _;
-    assert(_funds.received >= oldFunds.received);
-    assert(_funds.sent >= oldFunds.sent);
-    assert(_funds.received == _funds.balance + _funds.sent);
-  }
-
-  struct MarketplaceFunds {
-    uint256 balance;
+  struct MarketplaceTotals {
     uint256 received;
     uint256 sent;
   }
